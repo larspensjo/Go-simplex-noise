@@ -21,6 +21,8 @@ See also Wikipedia: [Simplex noise](http://en.wikipedia.org/wiki/Simplex_noise)
 
 ## Usage instructions
 
+`import "github.com/larspensjo/Go-simplex-noise/simplexnoise"`
+
 1D simplex noise   
 `func Noise1(x float64) float64`
 
