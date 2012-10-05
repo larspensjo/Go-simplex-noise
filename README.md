@@ -1,4 +1,4 @@
-simplexnoise
+Simplexnoise
 ============
 
 As copied from the original C implementation by Stefan Gustavson:
@@ -13,21 +13,22 @@ code available in the PDF course notes, although I re-implemented
 it from scratch to get more readable code. The 1D, 2D and 4D cases
 were implemented from scratch by me from Ken Perlin's text.
 
+See also Wikipedia: [Simplex noise](http://en.wikipedia.org/wiki/Simplex_noise)
+
 ## Installation
 
 	go get github.com/larspensjo/Go-simplex-noise/simplexnoise
 
 ## Usage instructions
 
-// 1D simplex noise
-func Noise1(x float64) float64
+1D simplex noise   
+`func Noise1(x float64) float64`
 
-// 2D simplex noise
-func Noise2(x, y float64) float64
+2D simplex noise   
+`func Noise2(x, y float64) float64`
 
-// 3D simplex noise
-func Noise3(x, y, z float64) float64
-
+3D simplex noise   
+`func Noise3(x, y, z float64) float64`
 
 ## Copyright and licensing
 
