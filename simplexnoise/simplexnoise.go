@@ -113,6 +113,14 @@ func Q(cond bool, v1 float64, v2 float64) float64 {
 	return v2
 }
 
+func bool2int(b bool) int {
+	if b {
+		return 1
+	} else {
+		return 0
+	}
+}
+
 func grad1(hash uint8, x float64) float64 {
 	h := hash & 15
 	grad := float64(1 + h&7) // Gradient value 1.0, 2.0, ..., 8.0
@@ -134,6 +142,28 @@ func grad3(hash uint8, x, y, z float64) float64 {
 	u := Q(h < 8, x, y)                           // gradient directions, and compute dot product.
 	v := Q(h < 4, y, Q(h == 12 || h == 14, x, z)) // Fix repeats at h = 12 to 15
 	return Q(h&1 != 0, -u, u) + Q(h&2 != 0, -v, v)
+}
+
+func grad4(hash uint8, x, y, z, t float64) float64 {
+	h := hash & 31       // Convert low 5 bits of hash code into 32 simple
+	u := Q(h < 24, x, y) // gradient directions, and compute dot product.
+	v := Q(h < 16, y, z)
+	w := Q(h < 8, z, t)
+	return (Q(h&1 != 0, -u, u)) + Q(h&2 != 0, -v, v) + Q(h&4 != 0, -w, w)
+}
+
+// A lookup table to traverse the simplex around a given point in 4D.
+// Details can be found where this table is used, in the 4D noise method.
+// TODO: This should not be required, backport it from Bill's GLSL code!
+var simplex = [64][4]uint8{
+	{0, 1, 2, 3}, {0, 1, 3, 2}, {0, 0, 0, 0}, {0, 2, 3, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {1, 2, 3, 0},
+	{0, 2, 1, 3}, {0, 0, 0, 0}, {0, 3, 1, 2}, {0, 3, 2, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {1, 3, 2, 0},
+	{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0},
+	{1, 2, 0, 3}, {0, 0, 0, 0}, {1, 3, 0, 2}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {2, 3, 0, 1}, {2, 3, 1, 0},
+	{1, 0, 2, 3}, {1, 0, 3, 2}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {2, 0, 3, 1}, {0, 0, 0, 0}, {2, 1, 3, 0},
+	{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0},
+	{2, 0, 1, 3}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {3, 0, 1, 2}, {3, 0, 2, 1}, {0, 0, 0, 0}, {3, 1, 2, 0},
+	{2, 1, 0, 3}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {3, 1, 0, 2}, {0, 0, 0, 0}, {3, 2, 0, 1}, {3, 2, 1, 0},
 }
 
 // 1D simplex noise
@@ -368,4 +398,150 @@ func Noise3(x, y, z float64) float64 {
 	// Add contributions from each corner to get the final noise value.
 	// The result is scaled to stay just inside [-1,1]
 	return (n0 + n1 + n2 + n3) / 0.030555466710745972
+}
+
+// 4D simplex noise
+func Noise4(x, y, z, w float64) float64 {
+	// The skewing and unskewing factors are hairy again for the 4D case
+	const F4 = 0.309016994 // F4 = (Math.sqrt(5.0)-1.0)/4.0
+	const G4 = 0.138196601 // G4 = (5.0-Math.sqrt(5.0))/20.0
+
+	var n0, n1, n2, n3, n4 float64 // Noise contributions from the five corners
+
+	// Skew the (x,y,z,w) space to determine which cell of 24 simplices we're
+	// in.
+	s := (x + y + z + w) * F4 // Factor for 4D skewing.
+	xs := x + s
+	ys := y + s
+	zs := z + s
+	ws := w + s
+	i := FASTFLOOR(xs)
+	j := FASTFLOOR(ys)
+	k := FASTFLOOR(zs)
+	l := FASTFLOOR(ws)
+
+	t := float64(i+j+k+l) * G4 // Factor for 4D unskewing
+	X0 := float64(i) - t       // Unskew the cell origin back to (x,y,z,w) space
+	Y0 := float64(j) - t
+	Z0 := float64(k) - t
+	W0 := float64(l) - t
+
+	x0 := x - X0 // The x,y,z,w distances from the cell origin
+	y0 := y - Y0
+	z0 := z - Z0
+	w0 := w - W0
+
+	// For the 4D case, the simplex is a 4D shape I won't even try to describe.
+	// To find out which of the 24 possible simplices we're in, we need to
+	// determine the magnitude ordering of x0, y0, z0 and w0.
+	// The method below is a good way of finding the ordering of x,y,z,w and
+	// then find the correct traversal order for the simplex we’re in.
+	// First, six pair-wise comparisons are performed between each possible pair
+	// of the four coordinates, and the results are used to add up binary bits
+	// for an integer index.
+	var c int
+	if x0 > y0 {
+		c += 32
+	}
+	if x0 > z0 {
+		c += 16
+	}
+	if y0 > z0 {
+		c += 8
+	}
+	if x0 > w0 {
+		c += 4
+	}
+	if y0 > w0 {
+		c += 2
+	}
+	if z0 > w0 {
+		c += 1
+	}
+
+	var i1, j1, k1, l1 int // The integer offsets for the second simplex corner
+	var i2, j2, k2, l2 int // The integer offsets for the third simplex corner
+	var i3, j3, k3, l3 int // The integer offsets for the fourth simplex corner
+
+	// simplex[c] is a 4-vector with the numbers 0, 1, 2 and 3 in some order.
+	// Many values of c will never occur, since e.g. x>y>z>w makes x<z, y<w and x<w
+	// impossible. Only the 24 indices which have non-zero entries make any sense.
+	// We use a thresholding to set the coordinates in turn from the largest magnitude.
+	// The number 3 in the "simplex" array is at the position of the largest coordinate.
+	i1 = bool2int(simplex[c][0] >= 3)
+	j1 = bool2int(simplex[c][1] >= 3)
+	k1 = bool2int(simplex[c][2] >= 3)
+	l1 = bool2int(simplex[c][3] >= 3)
+	// The number 2 in the "simplex" array is at the second largest coordinate.
+	i2 = bool2int(simplex[c][0] >= 2)
+	j2 = bool2int(simplex[c][1] >= 2)
+	k2 = bool2int(simplex[c][2] >= 2)
+	l2 = bool2int(simplex[c][3] >= 2)
+	// The number 1 in the "simplex" array is at the second smallest coordinate.
+	i3 = bool2int(simplex[c][0] >= 1)
+	j3 = bool2int(simplex[c][1] >= 1)
+	k3 = bool2int(simplex[c][2] >= 1)
+	l3 = bool2int(simplex[c][3] >= 1)
+	// The fifth corner has all coordinate offsets = 1, so no need to look that up.
+
+	x1 := x0 - float64(i1) + G4 // Offsets for second corner in (x,y,z,w) coords
+	y1 := y0 - float64(j1) + G4
+	z1 := z0 - float64(k1) + G4
+	w1 := w0 - float64(l1) + G4
+	x2 := x0 - float64(i2) + 2.0*G4 // Offsets for third corner in (x,y,z,w) coords
+	y2 := y0 - float64(j2) + 2.0*G4
+	z2 := z0 - float64(k2) + 2.0*G4
+	w2 := w0 - float64(l2) + 2.0*G4
+	x3 := x0 - float64(i3) + 3.0*G4 // Offsets for fourth corner in (x,y,z,w) coords
+	y3 := y0 - float64(j3) + 3.0*G4
+	z3 := z0 - float64(k3) + 3.0*G4
+	w3 := w0 - float64(l3) + 3.0*G4
+	x4 := x0 - 1.0 + 4.0*G4 // Offsets for last corner in (x,y,z,w) coords
+	y4 := y0 - 1.0 + 4.0*G4
+	z4 := z0 - 1.0 + 4.0*G4
+	w4 := w0 - 1.0 + 4.0*G4
+
+	// Calculate the contribution from the five corners
+	t0 := 0.6 - x0*x0 - y0*y0 - z0*z0 - w0*w0
+	if t0 < 0.0 {
+		n0 = 0.0
+	} else {
+		t0 *= t0
+		n0 = t0 * t0 * grad4(perm[(i+int(perm[(j+int(perm[(k+int(perm[l&0xff]))&0xff]))&0xff]))&0xff], x0, y0, z0, w0)
+	}
+
+	t1 := 0.6 - x1*x1 - y1*y1 - z1*z1 - w1*w1
+	if t1 < 0.0 {
+		n1 = 0.0
+	} else {
+		t1 *= t1
+		n1 = t1 * t1 * grad4(perm[(i+i1+int(perm[(j+j1+int(perm[(k+k1+int(perm[(l+l1)&0xff]))&0xff]))&0xff]))&0xff], x1, y1, z1, w1)
+	}
+
+	t2 := 0.6 - x2*x2 - y2*y2 - z2*z2 - w2*w2
+	if t2 < 0.0 {
+		n2 = 0.0
+	} else {
+		t2 *= t2
+		n2 = t2 * t2 * grad4(perm[(i+i2+int(perm[(j+j2+int(perm[(k+k2+int(perm[(l+l2)&0xff]))&0xff]))&0xff]))&0xff], x2, y2, z2, w2)
+	}
+
+	t3 := 0.6 - x3*x3 - y3*y3 - z3*z3 - w3*w3
+	if t3 < 0.0 {
+		n3 = 0.0
+	} else {
+		t3 *= t3
+		n3 = t3 * t3 * grad4(perm[(i+i3+int(perm[(j+j3+int(perm[(k+k3+int(perm[(l+l3)&0xff]))&0xff]))&0xff]))&0xff], x3, y3, z3, w3)
+	}
+
+	t4 := 0.6 - x4*x4 - y4*y4 - z4*z4 - w4*w4
+	if t4 < 0.0 {
+		n4 = 0.0
+	} else {
+		t4 *= t4
+		n4 = t4 * t4 * grad4(perm[(i+1+int(perm[(j+1+int(perm[(k+1+int(perm[(l+1)&0xff]))&0xff]))&0xff]))&0xff], x4, y4, z4, w4)
+	}
+
+	// Sum up and scale the result to cover the range [-1,1]
+	return 27.0 * (n0 + n1 + n2 + n3 + n4) // TODO: The scale factor is preliminary!
 }

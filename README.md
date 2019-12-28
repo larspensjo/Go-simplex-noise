@@ -32,6 +32,9 @@ See also Wikipedia: [Simplex noise](http://en.wikipedia.org/wiki/Simplex_noise)
 3D simplex noise   
 `func Noise3(x, y, z float64) float64`
 
+4D simplex noise   
+`func Noise4(x, y, z, w float64) float64`
+
 ## Copyright and licensing
 
 The source code is in the public domain. See top of simplexnoise.go.
